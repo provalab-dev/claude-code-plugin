@@ -3,7 +3,7 @@
 ProvaLab integration for AI coding agents (Claude Code, Cursor, Codex,
 Antigravity, Windsurf). Lets your agent **run, generate, and triage
 ProvaLab tests** directly from the editor via the ProvaLab MCP server
-at `https://mcp.provalab.io/mcp/sse`.
+at `https://mcp.provalab.io/mcp` (streamable-HTTP transport).
 
 Under the hood it's an MCP server plus a tiny auth helper
 (`provalab-auth`). Each agent speaks MCP the same way; only the config
@@ -13,13 +13,26 @@ file where you tell it about the server differs.
 
 ## Prerequisites
 
-Install the `provalab-auth` CLI once per machine so the agent can mint
-short-lived OAuth tokens for ProvaLab:
+Install the `provalab-auth` CLI once per machine so your agent can mint
+short-lived OAuth tokens.
+
+**macOS / Linux:**
 
 ```bash
-pip install provalab-auth    # or: pipx install provalab-auth
-provalab-auth login          # opens a browser, caches a refresh token
+curl -sSf https://plugins.provalab.io/install.sh | sh
+provalab-auth login
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://plugins.provalab.io/install.ps1 | iex
+provalab-auth login
+```
+
+`login` opens a browser (or prints a URL + code on headless machines)
+and caches a refresh token at `~/.config/provalab/auth.json`. The CLI
+is Python 3.9+ with no external deps.
 
 ---
 
@@ -32,21 +45,22 @@ provalab-auth login          # opens a browser, caches a refresh token
 /plugin install provalab@provalab-marketplace
 ```
 
-That's it — the plugin adds `/provalab-test`, `/provalab-status`,
+Restart Claude Code and run `/mcp` — the `provalab` server should show
+as connected. The plugin adds `/provalab-test`, `/provalab-status`,
 `/provalab-results` commands plus run/triage skills.
 
 ### Cursor
 
-Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project)
-and merge in:
+Edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project) and
+merge in:
 
 ```json
 {
   "mcpServers": {
     "provalab": {
-      "type": "sse",
-      "url": "https://mcp.provalab.io/mcp/sse",
-      "headersHelper": "sh -c 'token=$(provalab-auth token); printf \"Authorization: Bearer %s\\r\\n\" \"$token\"'"
+      "type": "http",
+      "url": "https://mcp.provalab.io/mcp",
+      "headersHelper": "provalab-auth mcp-header"
     }
   }
 }
@@ -60,9 +74,9 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.provalab]
-type = "sse"
-url = "https://mcp.provalab.io/mcp/sse"
-headers_cmd = ["sh", "-c", "token=$(provalab-auth token); printf 'Authorization: Bearer %s\\r\\n' \"$token\""]
+type = "http"
+url = "https://mcp.provalab.io/mcp"
+headers_cmd = ["provalab-auth", "mcp-header"]
 ```
 
 ### Google Antigravity
@@ -73,9 +87,9 @@ Edit the Antigravity MCP config (same JSON shape as Cursor):
 {
   "mcpServers": {
     "provalab": {
-      "type": "sse",
-      "url": "https://mcp.provalab.io/mcp/sse",
-      "headersHelper": "sh -c 'token=$(provalab-auth token); printf \"Authorization: Bearer %s\\r\\n\" \"$token\"'"
+      "type": "http",
+      "url": "https://mcp.provalab.io/mcp",
+      "headersHelper": "provalab-auth mcp-header"
     }
   }
 }
@@ -89,9 +103,9 @@ Edit `~/.codeium/windsurf/mcp_config.json`:
 {
   "mcpServers": {
     "provalab": {
-      "type": "sse",
-      "url": "https://mcp.provalab.io/mcp/sse",
-      "headersHelper": "sh -c 'token=$(provalab-auth token); printf \"Authorization: Bearer %s\\r\\n\" \"$token\"'"
+      "type": "http",
+      "url": "https://mcp.provalab.io/mcp",
+      "headersHelper": "provalab-auth mcp-header"
     }
   }
 }
@@ -99,16 +113,26 @@ Edit `~/.codeium/windsurf/mcp_config.json`:
 
 ---
 
+## Why `"type": "http"`, not `"sse"`?
+
+ProvaLab's MCP endpoint speaks the **streamable-HTTP** transport at
+`/mcp`. The legacy SSE endpoint at `/mcp/sse` is deprecated and
+connections time out after 30s — don't use it.
+
+---
+
 ## Verifying it works
 
 With any agent, ask it:
+
 ```
 List my ProvaLab test runs from the last 24h.
 ```
 
-The agent should call `provalab:api.list_runs` (or similar) via MCP
-and return a list. If you see "MCP server not reachable" or auth
-errors, run `provalab-auth login` again.
+The agent should call `tms_list_test_runs` (or similar) via MCP and
+return a list. If you see "MCP server not reachable" or auth errors,
+run `provalab-auth status` to confirm the token is still valid, then
+`provalab-auth login` to refresh.
 
 ---
 
