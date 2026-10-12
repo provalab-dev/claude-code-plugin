@@ -1,0 +1,11 @@
+{
+  "name": "provalab",
+  "displayName": "ProvaLab",
+  "version": "0.5.0",
+  "description": "Run, generate and triage ProvaLab tests from Claude Code. Connects to the ProvaLab MCP server and adds skills and slash commands for the run/poll/triage workflow.",
+  "author": { "name": "ProvaLab" },
+  "homepage": "https://provalab.io",
+  "license": "MIT",
+  "keywords": ["testing", "qa", "test-automation", "mcp"],
+  "defaultEnabled": true
+}

@@ -1,0 +1,19 @@
+{
+  "name": "provalab-marketplace",
+  "owner": {
+    "name": "ProvaLab",
+    "url": "https://provalab.io"
+  },
+  "description": "ProvaLab tooling for AI coding agents: run, generate, and triage ProvaLab tests from Claude Code via MCP.",
+  "plugins": [
+    {
+      "name": "provalab",
+      "source": "./plugins/provalab",
+      "description": "Run, generate and triage ProvaLab tests from Claude Code. Connects to the ProvaLab MCP server and adds skills + slash commands.",
+      "version": "0.5.0",
+      "category": "testing",
+      "keywords": ["testing", "qa", "mcp", "automation"],
+      "homepage": "https://provalab.io"
+    }
+  ]
+}

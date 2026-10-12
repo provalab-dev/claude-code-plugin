@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "api": {
+      "type": "sse",
+      "url": "https://mcp.provalab.io/mcp/sse",
+      "headersHelper": "sh -c 'PATH=\"$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v provalab-auth >/dev/null 2>&1 || { printf \"provalab-auth CLI not found on PATH (~/.local/bin missing?)\\n\" >&2; exit 1; }; token=$(provalab-auth token 2>/dev/null); [ -n \"$token\" ] || { printf \"provalab-auth token empty — run: provalab-auth login\\n\" >&2; exit 1; }; printf \"Authorization: Bearer %s\\r\\n\" \"$token\"'"
+    }
+  }
+}
