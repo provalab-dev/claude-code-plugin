@@ -1,53 +1,52 @@
 ---
 name: run-tests
-description: Use when the user asks to run tests, kick off a test run, execute a suite, or verify a feature works in ProvaLab — including phrasings like "run the login tests", "test the checkout flow", "run the regression suite for X". Covers starting a run and following it to completion.
+description: Use when the user asks to run tests, kick off a test run, execute a suite, or verify a feature works in ProvaLab — including phrasings like "run the login tests", "test the checkout flow", "run the regression suite for X". Covers choosing the tests, running them, and reporting the result.
 ---
 
 # Running a ProvaLab test suite
 
-Test runs take minutes. The server is async by design: starting a run returns
-immediately with a `run_id`, and you poll for completion. **Never block waiting
-for a run to finish, and never claim a result you have not fetched.**
+`execute_pytest` is **synchronous**. It runs the suite and returns the full result
+when the suite has finished. There is no `run_id` to poll and no "running" state to
+wait on. One call records one TMS test run, so a suite is always run in one call.
+**Never claim a result that is not in the response you got back.**
 
 ## Steps
 
-1. **Resolve the project.** If the user named one, use it. If they did not, call
-   `provalab_list_projects` and pick the match. If two or more plausibly match,
-   ask rather than guessing — running the wrong suite wastes minutes and can hit
-   real environments.
+1. **Resolve the project.** If the user named one, call `tms_list_projects` with
+   `search` and take the exact match. If they did not, list projects and pick the
+   match. If two or more plausibly match, ask rather than guess. Running the wrong
+   suite wastes minutes and can hit real environments.
 
-2. **Start the run.** Call `provalab_run_tests(project, target, options)`.
-   - `target` narrows what runs — a suite name, a tag, a file, or a feature area
-     like `login`. Omit it to run everything for the project.
-   - Pass `options` only when the user asked for something specific (browser,
-     environment, parallelism). Do not invent options.
-   - Expect `{ run_id, status: "running" }` back. Tell the user the run started
-     and give them the `run_id`.
+2. **Choose the tests.** Call `list_workspace_files`, and for UI suites
+   `get_ui_test_inventory(domain)`. Select the files that match what the user asked
+   for, plus the `conftest.py` files they depend on. Tell the user what you are
+   about to run before you run it.
 
-3. **Poll `provalab_get_run(run_id)` until it is no longer running.** Space the
-   polls out — every 15–30 seconds is plenty. Between polls, say what you are
-   waiting on rather than going silent.
+3. **Run them once.** Call `execute_pytest` with:
+   - `workspace_paths`: the files you selected (or `files` with content for tests
+     that are not in the workspace yet).
+   - `organization_id` and `project_id`, so results are recorded in TMS. Pass them
+     explicitly; do not rely on a session default.
+   - `timeout_s` sized for the whole suite (roughly 120 s per UI test).
+   - `base_url` only if the user gave one, and `test_plan_id` only if they named a
+     plan. Do not invent other options.
 
-4. **Summarise honestly when it finishes.**
-   - Lead with the outcome: passed, failed, or errored, with counts.
-   - If anything failed, name the failing tests. Do not paraphrase a failure you
-     have not read — call `provalab_get_results(run_id)` and quote the real error.
-   - Include the run link if the server returned one.
+4. **Summarise honestly from the response.**
+   - Lead with the outcome: passed, failed or errored, with counts.
+   - Name the failing tests and quote their real error text from the result.
+   - Give the TMS run the call recorded, so the user can find it later.
 
-## Handling long or stuck runs
+## When something goes wrong
 
-If a run is still `running` after several polls, say so plainly with the elapsed
-time and let the user decide whether to keep waiting. Do not silently keep
-polling forever, and do not report a partial result as if it were final.
-
-If a poll fails or the run enters an error state, report that — an infrastructure
-failure is not a test failure, and conflating them sends the user debugging the
-wrong thing.
+- If the call itself errors or times out, report that. An infrastructure failure is
+  not a test failure, and conflating them sends the user debugging the wrong thing.
+- If the user wants the detail of an earlier run, use `get_execution_result
+  (execution_id)` when you have the execution id, or `tms_get_test_run_results
+  (test_run_id)` from the TMS side.
 
 ## What not to do
 
-- Do not summarise results from the `provalab_run_tests` response. It only tells
-  you the run started.
-- Do not describe a run as passing because it has not failed yet.
-- Do not re-run a suite to "check" a result you could fetch with
-  `provalab_get_results`.
+- Do not split one suite into several `execute_pytest` calls, and do not use
+  `test_filter` to batch tests. Each call creates a separate TMS run. `test_filter`
+  is only for re-running a single failing test while debugging.
+- Do not re-run a suite to "check" a result you can fetch.

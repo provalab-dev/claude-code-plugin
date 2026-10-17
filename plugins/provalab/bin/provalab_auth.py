@@ -242,7 +242,18 @@ def _try_decode_email(jwt_token: str) -> Optional[str]:
             return None
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return payload.get("email") or payload.get("preferred_username") or payload.get("sub")
+        return payload.get("email") or payload.get("preferred_username")
+    except Exception:
+        return None
+
+
+def _token_subject(jwt_token: str) -> Optional[str]:
+    """The token's `sub` (account id), for display only. Not verified."""
+    try:
+        import base64
+        payload_b64 = jwt_token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload_b64)).get("sub")
     except Exception:
         return None
 
@@ -286,11 +297,17 @@ def cmd_token(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp_header(args: argparse.Namespace) -> int:
-    """Print 'Authorization: Bearer <token>\\r\\n' for use as .mcp.json headersHelper.
+    """Print the MCP auth header for use as a `headersHelper` command.
 
-    One invocation replaces the sh -c 'command -v provalab-auth / token / printf'
-    gymnastics in .mcp.json — and works unchanged on Windows where sh isn't
-    guaranteed. Non-zero exit + stderr diagnostic on any auth problem.
+    Claude Code requires a headersHelper to write a JSON object of string
+    key-value pairs to stdout (https://code.claude.com/docs/en/mcp.md,
+    "Use dynamic headers for custom authentication"), so the default output
+    is `{"Authorization": "Bearer <token>"}`. A raw `Authorization: ...` line
+    is rejected with "did not return valid JSON" and the token is never sent.
+    `--raw` prints the HTTP header line instead, for clients that want that.
+
+    Non-zero exit + stderr diagnostic on any auth problem, so the client
+    reports a clear failure instead of connecting without credentials.
     """
     cfg = _load_config()
     if not cfg.get("access_token"):
@@ -301,7 +318,20 @@ def cmd_mcp_header(args: argparse.Namespace) -> int:
     except Exception as e:
         sys.stderr.write(f"provalab-auth: {e}\n")
         return 3
-    sys.stdout.write(f"Authorization: Bearer {cfg['access_token']}\r\n")
+    headers = {"Authorization": f"Bearer {cfg['access_token']}"}
+    # Optional org/project selection for users in more than one org. The MCP
+    # server otherwise uses the user's first active org, and the project when
+    # that org has only one. Only non-empty values are sent: an empty header
+    # value makes Claude Code reject every tools/call.
+    for env_name, header in (("PROVALAB_ORG_ID", "X-Organization-Id"),
+                             ("PROVALAB_PROJECT_ID", "X-Project-Id")):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            headers[header] = value
+    if getattr(args, "raw", False):
+        sys.stdout.write("".join(f"{k}: {v}\r\n" for k, v in headers.items()))
+    else:
+        sys.stdout.write(json.dumps(headers))
     return 0
 
 
@@ -313,8 +343,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     now = int(time.time())
     exp = cfg.get("expires_at", 0)
     remaining = exp - now
-    email = _try_decode_email(cfg["access_token"]) or "unknown"
-    print(f"Signed in as:   {email}")
+    email = _try_decode_email(cfg["access_token"])
+    if email:
+        print(f"Signed in as:   {email}")
+    else:
+        # The identity server's CLI tokens carry no email claim, only `sub`.
+        print(f"Signed in:      yes (account id {_token_subject(cfg['access_token']) or 'unknown'})")
     print(f"Config:         {CONFIG_PATH}")
     print(f"Issuer:         {cfg.get('issuer', '?')}")
     if remaining > 0:
@@ -354,8 +388,10 @@ def _build_parser() -> argparse.ArgumentParser:
     tok.set_defaults(func=cmd_token)
 
     mh = sub.add_parser("mcp-header",
-                        help="Print 'Authorization: Bearer <token>\\r\\n' for .mcp.json headersHelper.")
+                        help='Print {"Authorization": "Bearer <token>"} (JSON) for a Claude Code headersHelper.')
     mh.set_defaults(func=cmd_mcp_header)
+    mh.add_argument("--raw", action="store_true",
+                    help="Print a raw `Authorization: Bearer ...` header line instead of JSON")
 
     status = sub.add_parser("status", help="Show current sign-in state.")
     status.set_defaults(func=cmd_status)

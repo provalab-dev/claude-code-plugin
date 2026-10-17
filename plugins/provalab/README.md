@@ -4,28 +4,36 @@ Run, generate and triage ProvaLab tests without leaving Claude Code.
 
 This plugin contains **no business logic and defines no tools of its own**. It bundles
 a connector to the ProvaLab remote MCP server and adds skills and slash commands that
-teach Claude Code how to drive it — start a run, poll it, read the results honestly.
+teach Claude Code how to drive it — pick the tests, run them, read the results honestly.
 
 ## Install
 
 ```
-/plugin marketplace add https://plugins.provalab.io/marketplace.json
+/plugin marketplace add provalab-dev/claude-code-plugin
 /plugin install provalab@provalab-marketplace
 ```
 
-Restart Claude Code once so the MCP server loads.
+Restart Claude Code once so the MCP server loads, then sign in (next section).
+
+**Use either this plugin or the claude.ai ProvaLab connector, not both.** Both point at
+`https://mcp.provalab.io/mcp`, and Claude Code connects to one endpoint only once. A
+plugin-provided server ranks above a claude.ai connector, so with the plugin enabled
+`/mcp` lists the connector as `hidden — same URL as your server 'plugin:provalab:api'`.
+That is expected: the plugin's server gives you the same tools. To go back to the
+connector, disable the plugin's server in `/plugins` (or run
+`/plugin disable provalab@provalab-marketplace`) and restart.
 
 ## Authentication
 
-The plugin fetches its access token from `provalab-auth`, a small CLI
-that runs the OAuth device flow — perfect for headless machines
-(SSH sessions, VPSes, containers, CI). One-time setup:
+The plugin signs its MCP requests with a token from `provalab-auth`, a small CLI that
+runs the OAuth device flow, so it also works on headless machines (SSH sessions, VPSes,
+containers, CI). One-time setup:
 
 ```
-# 1. Install the CLI (Python 3.9+ required; stdlib only, zero deps)
-curl -fsSL https://plugins.provalab.io/install-auth | sh
+# 1. Install the CLI (Python 3.9+; stdlib only, no other dependencies)
+curl -fsSL https://plugins.provalab.io/install.sh | sh
 
-# 2. Sign in (opens no browser — prints a URL + short code)
+# 2. Sign in (prints a URL and a short code; approve it in any browser)
 provalab-auth login
 ```
 
@@ -39,21 +47,33 @@ You'll see something like:
   Open this URL in ANY browser (any device):
      https://auth.provalab.io/device?user_code=BCDF-GHJK
 
-  Or visit https://auth.provalab.io/device and enter the code above.
-
   Waiting for approval....
 ```
 
-Open the URL on your phone, laptop, anywhere. Sign in, click Approve —
-the CLI on the server sees the approval and stores your token at
-`~/.config/provalab/auth.json`. Every future MCP call the plugin makes
-uses that token; expired tokens refresh silently.
+Approve it on your phone or laptop. The CLI stores the token at
+`~/.config/provalab/auth.json`, and expired tokens refresh silently.
+
+The plugin does not need `provalab-auth` on your `PATH`: its `.mcp.json` runs the copy
+bundled with the plugin, `python3 "${CLAUDE_PLUGIN_ROOT}/bin/provalab_auth.py" mcp-header`,
+which prints `{"Authorization": "Bearer <token>"}` as Claude Code's `headersHelper`
+requires. It reads the same token file, so one `provalab-auth login` covers it. If you
+would rather not install the CLI at all, run that bundled script with `login` instead.
 
 To sign out: `provalab-auth logout`. To check state: `provalab-auth status`.
 
-**No API key, no localhost callback, no env vars to export**. The
-plugin's `.mcp.json` shells out to `provalab-auth token` on each
-connection.
+### Checking the connection
+
+```
+claude mcp list
+```
+
+should show `plugin:provalab:api: https://mcp.provalab.io/mcp (HTTP) - ✔ Connected`.
+
+| You see | Meaning |
+|---|---|
+| `! Needs authentication` | The helper produced no token. Run `provalab-auth status`, then `provalab-auth login`, then `/mcp` → reconnect. |
+| `✘ Failed to connect … (HTTP 401)` | The token was rejected or expired and could not refresh. Run `provalab-auth login`. |
+| `✘ Failed to connect … (HTTP 403)` | Signed in, but `PROVALAB_ORG_ID` / `PROVALAB_PROJECT_ID` name an org you are not an active member of, or a project outside that org. Fix or unset them (see [Configuration](#configuration)). |
 
 ## Usage
 
@@ -62,33 +82,34 @@ Ask in plain language — the skills trigger on intent:
 - *"Run the login tests for the checkout project"*
 - *"Generate tests for https://staging.example.com/signup and run them"*
 - *"Why did run 8412 fail?"*
-- *"Is my run done yet?"*
+- *"Did last night's run pass?"*
 
 Or use the slash commands:
 
 | Command | Does |
 |---|---|
-| `/provalab-test <project> [target]` | Start a run, then poll it to completion |
-| `/provalab-status [run_id]` | Status of a run, or the most recent one |
-| `/provalab-results <run_id>` | Fetch and summarise results, grouped by cause |
+| `/provalab-test <project> [target]` | Run the suite (or a target area) and report the result |
+| `/provalab-status [test_run_id]` | Status of a recorded run, or the most recent one |
+| `/provalab-results <test_run_id>` | Fetch and summarise results, grouped by cause |
 
 ## How it behaves
 
-Runs take minutes, so the whole design is **poll-based, never blocking**. Starting a run
-returns a `run_id` immediately; a separate tool call polls for completion. The skills
-enforce a few honesty rules that matter more than they sound:
+Running a suite is **synchronous**: `execute_pytest` returns when the suite has
+finished, with the full result. One call records one TMS run, so the skills always run a
+suite in a single call. The skills also enforce a few honesty rules that matter more
+than they sound:
 
 - Never report a result that has not been fetched.
 - Never describe a failure whose error text has not been read.
-- Group failures by cause, not by test — twenty reds from one broken selector is one
+- Group failures by cause, not by test. Twenty reds from one broken selector is one
   problem.
 - Flag skipped tests, because a suite that skips half its cases can look green while
   proving very little.
 
 ## Server contract
 
-The plugin talks to the **QA Agent's MCP server**, mounted at `/mcp/sse`. The skills
-are written against the tools that server actually exposes:
+The plugin talks to the **QA Agent's MCP server** at `https://mcp.provalab.io/mcp`
+(streamable-HTTP). The skills are written against the tools that server actually exposes:
 
 | Tool | Shape |
 |---|---|
@@ -96,6 +117,9 @@ are written against the tools that server actually exposes:
 | `get_execution_result(execution_id)` | full pytest JSON for a past execution |
 | `tms_list_test_runs(status?, page_size?)` | recent TMS runs, newest first |
 | `tms_get_test_run_results(test_run_id)` | per-test results recorded in TMS |
+| `tms_get_test_run_failures(run_id)` | failed results with first console error + stack trace |
+| `tms_get_similar_failures(result_id)` / `tms_classify_failure(result_id, category)` | triage helpers |
+| `tms_list_projects(search?)` | projects in your organization |
 | `get_ui_test_inventory(domain)` | every UI test file for a domain + its test functions |
 | `list_workspace_files` / `read_workspace_file` | anything not covered by the inventory |
 | `analyze_page(url)` / `crawl_site(url)` | page structure, for writing tests |
@@ -115,49 +139,35 @@ side when no execution id is at hand. Prefer the execution report when you have 
 
 ### Configuration
 
-`.mcp.json` defaults to the K3s NodePort. See [Authentication](#authentication) above
-for `PROVALAB_MCP_URL` / `PROVALAB_AUTH_METADATA_URL` and the login flow itself — this
-section is about the org/project selection that login does not cover.
+Login proves *who* you are. The server then picks *which* org and project you act in:
 
-Login proves *who* you are; `PROVALAB_ORG_ID` and `PROVALAB_PROJECT_ID` still say
-*which* org/project you're acting in, and both are read from headers on every request.
-**Set both before use.** Several tools take no id parameters at all
-(`list_workspace_files`, `get_ui_test_inventory`) — they can only read them from here.
-Left at the `0` default, those tools answer `"No project context available"`, which is
-the intended failure: loud and specific. And unlike a bare header value, `0` is now also
-checked server-side — the MCP server verifies you're an active member of that org (and,
-if a project id is set, that the project actually belongs to that org) before running
-anything, so a stale or wrong id fails with 403 rather than quietly writing into the
-wrong project.
+- **Organization**: your first active membership. If you belong to more than one org,
+  set `PROVALAB_ORG_ID` to the org's Identity UUID before starting Claude Code.
+- **Project**: the org's only project, when it has exactly one. Otherwise set
+  `PROVALAB_PROJECT_ID`, or pass `project_id` to the tools that take it.
 
-The defaults are `0` rather than empty for a reason worth keeping. An empty header value
-— what an unset `${VAR:-}` expands to — made Claude Code reject **every** `tools/call`
-with "Invalid request parameters" while `tools/list` still succeeded, so the plugin
-looked connected and was not. Any non-empty value avoids that; `0` additionally fails
-loudly instead of silently pointing at some real project that happens to exist (and, per
-above, `0` is never a real org/project id you can be a member of, so the server-side
-membership check rejects it too).
+The helper sends these as `X-Organization-Id` / `X-Project-Id` only when they are set
+and non-empty. The server checks that you are an active member of the org, and that the
+project belongs to it, before running anything, so a stale or wrong id fails with 403
+instead of writing into the wrong project.
 
-Tools that DO accept `organization_id` / `project_id` (`execute_pytest`,
-`tms_list_test_runs`) should still be passed them explicitly. An invisible session
-default is the wrong thing to rely on when a wrong value writes results into someone
-else's project.
+Tools that accept `organization_id` / `project_id` (`execute_pytest`,
+`tms_list_test_runs`) should still be passed them explicitly. An invisible default is
+the wrong thing to rely on when a wrong value writes results into someone else's
+project.
 
 ### Tool namespacing
 
 Plugin-bundled MCP tools are namespaced `mcp__plugin_<plugin>_<server>__<tool>`, so with
-plugin `provalab` and server key `api` they surface as:
+plugin `provalab` and server key `api` they surface as, for example:
 
 ```
-mcp__plugin_provalab_api__provalab_run_tests
+mcp__plugin_provalab_api__execute_pytest
 ```
 
-This matters for permission rules, `allowed-tools`, and hook matchers — a bare
-`mcp__provalab__*` matcher will **not** fire for a plugin-bundled server.
-
-Because the namespace already carries `provalab`, the `provalab_` prefix on each tool
-name is redundant. Dropping it server-side would give the shorter
-`mcp__plugin_provalab_api__run_tests`. Worth deciding before the tool names are public.
+This matters for permission rules, `allowed-tools`, and hook matchers. A bare
+`mcp__provalab__*` matcher will **not** fire for a plugin-bundled server; use
+`mcp__plugin_provalab_api__*`.
 
 ## Layout
 
@@ -167,6 +177,7 @@ provalab-claude-plugin/
 └── plugins/provalab/
     ├── .claude-plugin/plugin.json
     ├── .mcp.json                     # remote MCP connector (plugin ROOT, not in .claude-plugin/)
+    ├── bin/provalab_auth.py          # bundled auth CLI; .mcp.json's headersHelper runs it
     ├── commands/
     ├── skills/
     └── README.md
@@ -181,5 +192,5 @@ Verified against the current documentation:
 
 - Plugin structure and `plugin.json` — https://code.claude.com/docs/en/plugins-reference.md
 - Bundled MCP servers — https://code.claude.com/docs/en/plugins-reference.md#mcp-servers
-- Remote transports, OAuth, `${VAR}` expansion — https://code.claude.com/docs/en/mcp.md
+- Remote transports, OAuth, `headersHelper`, duplicate servers vs connectors — https://code.claude.com/docs/en/mcp.md
 - Marketplace schema and install flow — https://code.claude.com/docs/en/plugin-marketplaces.md

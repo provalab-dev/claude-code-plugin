@@ -45,9 +45,16 @@ is Python 3.9+ with no external deps.
 /plugin install provalab@provalab-marketplace
 ```
 
-Restart Claude Code and run `/mcp` — the `provalab` server should show
-as connected. The plugin adds `/provalab-test`, `/provalab-status`,
-`/provalab-results` commands plus run/triage skills.
+Restart Claude Code and run `claude mcp list` — `plugin:provalab:api`
+should show as `✔ Connected`. The plugin adds `/provalab-test`,
+`/provalab-status`, `/provalab-results` commands plus run/triage skills.
+It runs its own bundled copy of `provalab-auth` for the token, so only
+the `provalab-auth login` above is needed.
+
+Use either the plugin or the claude.ai ProvaLab connector, not both: they
+share the endpoint, so with the plugin enabled Claude Code shows the
+connector as hidden. To switch back, disable the plugin's server in
+`/plugins` and restart.
 
 ### Cursor
 
@@ -143,12 +150,12 @@ agents just talk to the MCP server directly.
 
 | Item | Trigger | Purpose |
 |---|---|---|
-| `/provalab-test` | slash command | Kick off a ProvaLab run from the agent |
-| `/provalab-status` | slash command | Poll an in-flight run |
+| `/provalab-test` | slash command | Run a ProvaLab suite from the agent |
+| `/provalab-status` | slash command | Status of a recorded run |
 | `/provalab-results` | slash command | Pull failures + diffs for triage |
 | `run-tests` | skill | Agent uses this when you ask it to run tests |
 | `generate-and-run` | skill | Generates missing tests, then runs them |
-| `check-status` | skill | Polls run status with sensible timeouts |
+| `check-status` | skill | Read-only run and project lookups |
 | `triage-failures` | skill | Pulls failure info and proposes fixes |
 
 For Cursor / Codex / Antigravity / Windsurf, those capabilities are
