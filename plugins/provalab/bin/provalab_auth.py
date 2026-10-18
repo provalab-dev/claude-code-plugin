@@ -43,6 +43,7 @@ from typing import Any, Dict, Optional
 
 
 # ── Defaults ────────────────────────────────────────────────────────────
+__version__ = "1.1.0"
 DEFAULT_ISSUER = os.environ.get("PROVALAB_AUTH_ISSUER", "https://auth-api.provalab.io")
 DEFAULT_CLIENT_ID = os.environ.get("PROVALAB_AUTH_CLIENT_ID", "provalab-cli")
 DEFAULT_SCOPE = os.environ.get(
@@ -58,7 +59,7 @@ REFRESH_LEEWAY_SECONDS = 60  # refresh when access token has less than this left
 
 # Cloudflare's WAF blocks the default `Python-urllib/3.x` UA in front of
 # our identity host; identify ourselves explicitly to get through.
-USER_AGENT = "provalab-auth/1.0 (+https://plugins.provalab.io)"
+USER_AGENT = f"provalab-auth/{__version__} (+https://plugins.provalab.io)"
 
 
 # ── HTTP helper (stdlib) ────────────────────────────────────────────────
@@ -102,11 +103,26 @@ def _load_config() -> Dict[str, Any]:
 
 
 def _save_config(data: Dict[str, Any]) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    """Write tokens atomically, owner-only from the first byte (#233).
+
+    The temp file is created with mode 0600 by os.open, so there is no
+    window where another user could read it (write-then-chmod had one).
+    """
+    CONFIG_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(CONFIG_PATH.parent, 0o700)
+    except OSError:
+        pass  # not our directory (e.g. a shared XDG dir); the file is still 0600
     tmp = CONFIG_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    # Never leave tokens world-readable.
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
+    finally:
+        os.close(fd)
     tmp.replace(CONFIG_PATH)
 
 
@@ -225,7 +241,7 @@ def _persist_tokens(tokens: Dict[str, Any], *, issuer: str, client_id: str, scop
 def _print_success(tokens: Dict[str, Any]) -> None:
     sys.stderr.write("\n\n")
     # Try to extract identity from the JWT for a friendly message.
-    email = _try_decode_email(tokens.get("access_token", ""))
+    email = _try_decode_email(tokens.get("access_token", "")) or _userinfo_email(_load_config())
     if email:
         sys.stderr.write(f"  ✓ Signed in as {email}\n")
     else:
@@ -343,12 +359,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     now = int(time.time())
     exp = cfg.get("expires_at", 0)
     remaining = exp - now
-    email = _try_decode_email(cfg["access_token"])
+    email = _try_decode_email(cfg["access_token"]) or (_userinfo_email(cfg) if remaining > 0 else None)
     if email:
         print(f"Signed in as:   {email}")
     else:
-        # The identity server's CLI tokens carry no email claim, only `sub`.
-        print(f"Signed in:      yes (account id {_token_subject(cfg['access_token']) or 'unknown'})")
+        print("Signed in:      yes")
     print(f"Config:         {CONFIG_PATH}")
     print(f"Issuer:         {cfg.get('issuer', '?')}")
     if remaining > 0:
@@ -360,9 +375,40 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _userinfo_email(cfg: Dict[str, Any]) -> Optional[str]:
+    """The signed-in email from the OIDC UserInfo endpoint (#237); None on any
+    problem — display only, never fatal."""
+    try:
+        url = _openid_config(cfg.get("issuer", DEFAULT_ISSUER)).get("userinfo_endpoint")
+        if not url:
+            return None
+        info = _http_get_json(url, headers={"Authorization": f"Bearer {cfg['access_token']}"}, timeout=8)
+        return info.get("email") or info.get("preferred_username")
+    except Exception:
+        return None
+
+
 def cmd_logout(args: argparse.Namespace) -> int:
+    """Revoke the refresh token on the server (best effort), then delete the
+    local token file (#233). Says plainly when there was nothing to do."""
+    cfg = _load_config()
+    if not cfg and not CONFIG_PATH.exists():
+        print("Not signed in — nothing to clear.")
+        return 0
+    revoke_note = ""
+    refresh_token = cfg.get("refresh_token")
+    if refresh_token:
+        try:
+            url = _openid_config(cfg.get("issuer", DEFAULT_ISSUER)).get("revocation_endpoint")
+            if url:
+                _http_post_form(url, {"token": refresh_token, "token_type_hint": "refresh_token",
+                                      "client_id": cfg.get("client_id", DEFAULT_CLIENT_ID)}, timeout=8)
+            else:
+                revoke_note = " (server offers no revocation endpoint; the refresh token expires on its own)"
+        except Exception:
+            revoke_note = " (could not reach the server to revoke the refresh token; it expires on its own)"
     _clear_config()
-    print(f"Cleared {CONFIG_PATH}.")
+    print(f"Signed out. Removed {CONFIG_PATH}{revoke_note}.")
     return 0
 
 
@@ -373,6 +419,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="provalab-auth",
         description="Device-flow OAuth CLI for ProvaLab.io.",
     )
+    p.add_argument("--version", action="version", version=f"provalab-auth {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     login = sub.add_parser("login", help="Start device flow, print URL + code, wait for approval.")
