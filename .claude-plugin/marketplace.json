@@ -10,7 +10,7 @@
       "name": "provalab",
       "source": "./plugins/provalab",
       "description": "Run, generate and triage ProvaLab tests from Claude Code. Connects to the ProvaLab MCP server and adds skills + slash commands.",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "category": "testing",
       "keywords": ["testing", "qa", "mcp", "automation"],
       "homepage": "https://provalab.io"
