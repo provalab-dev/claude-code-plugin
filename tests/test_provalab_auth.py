@@ -96,3 +96,53 @@ def test_status_falls_back_quietly_when_userinfo_unavailable(pa, monkeypatch, ca
     monkeypatch.setattr(pa, "_openid_config", boom)
     assert pa.cmd_status(SimpleNamespace()) == 0
     assert "Signed in" in capsys.readouterr().out
+
+
+REVIEWS = "https://reviews.provalab.io/mcp"
+
+
+def _refresh_server(pa, monkeypatch, calls):
+    monkeypatch.setattr(pa, "_openid_config", lambda issuer: {"token_endpoint": "https://id.test/token"})
+
+    def post(url, data, timeout=15):
+        calls.append(dict(data))
+        n = len(calls)
+        return {"access_token": f"review-access-{n}", "refresh_token": f"r-{n + 1}",
+                "expires_in": 3600}
+
+    monkeypatch.setattr(pa, "_http_post_form", post)
+
+
+def test_mcp_header_for_another_server_uses_the_same_login(pa, monkeypatch, capsys):
+    """The PR review MCP server ships in this plugin with the same sign-in: its
+    header asks identity's refresh grant for a token for that server (RFC 8707)."""
+    _signed_in(pa)
+    calls = []
+    _refresh_server(pa, monkeypatch, calls)
+    assert pa.cmd_mcp_header(SimpleNamespace(raw=False, resource=REVIEWS)) == 0
+    assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer review-access-1"}
+    assert calls == [{"grant_type": "refresh_token", "refresh_token": "r-1",
+                      "client_id": "provalab-cli", "resource": REVIEWS}]
+    cfg = pa._load_config()
+    # the login itself is unchanged except for the newer refresh token
+    assert cfg["access_token"] == "h.eyJzdWIiOiJ1LTEifQ.s"
+    assert cfg["refresh_token"] == "r-2"
+    # the server's token is kept until it nears expiry: no second call
+    assert pa.cmd_mcp_header(SimpleNamespace(raw=False, resource=REVIEWS)) == 0
+    assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer review-access-1"}
+    assert len(calls) == 1
+    # and the main token is untouched by it
+    assert pa.cmd_mcp_header(SimpleNamespace(raw=False, resource="")) == 0
+    assert "h.eyJzdWIiOiJ1LTEifQ.s" in capsys.readouterr().out
+
+
+def test_a_refreshed_login_keeps_the_other_servers_tokens(pa, monkeypatch):
+    _signed_in(pa, resources={REVIEWS: {"access_token": "keep", "expires_at": 9_999_999_999}})
+    pa._persist_tokens({"access_token": "new", "refresh_token": "r-9", "expires_in": 60},
+                       issuer="https://id.test", client_id="provalab-cli", scope="")
+    assert pa._load_config()["resources"][REVIEWS]["access_token"] == "keep"
+
+
+def test_mcp_header_for_another_server_needs_a_login(pa, capsys):
+    assert pa.cmd_mcp_header(SimpleNamespace(raw=False, resource=REVIEWS)) == 3
+    assert "provalab-auth login" in capsys.readouterr().err

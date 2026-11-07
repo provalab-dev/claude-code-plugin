@@ -4,6 +4,11 @@
       "type": "http",
       "url": "https://mcp.provalab.io/mcp",
       "headersHelper": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/provalab_auth.py\" mcp-header"
+    },
+    "review": {
+      "type": "http",
+      "url": "https://reviews.provalab.io/mcp",
+      "headersHelper": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/provalab_auth.py\" mcp-header --resource https://reviews.provalab.io/mcp"
     }
   }
 }

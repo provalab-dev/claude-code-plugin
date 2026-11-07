@@ -1,6 +1,7 @@
 # ProvaLab for Claude Code
 
-Run, generate and triage ProvaLab tests without leaving Claude Code.
+Run, generate and triage ProvaLab tests, and get your changes reviewed by the
+ProvaLab PR review bot before you commit, without leaving Claude Code.
 
 This plugin contains **no business logic and defines no tools of its own**. It bundles
 a connector to the ProvaLab remote MCP server and adds skills and slash commands that
@@ -83,6 +84,7 @@ Ask in plain language — the skills trigger on intent:
 - *"Generate tests for https://staging.example.com/signup and run them"*
 - *"Why did run 8412 fail?"*
 - *"Did last night's run pass?"*
+- *"Review my changes before I commit"*
 
 Or use the slash commands:
 
@@ -91,6 +93,19 @@ Or use the slash commands:
 | `/provalab-test <project> [target]` | Run the suite (or a target area) and report the result |
 | `/provalab-status [test_run_id]` | Status of a recorded run, or the most recent one |
 | `/provalab-results <test_run_id>` | Fetch and summarise results, grouped by cause |
+
+## Reviewing changes before a commit
+
+The plugin's second MCP server, `review` (`https://reviews.provalab.io/mcp`), is the
+ProvaLab PR review bot. The `review-changes` skill sends your uncommitted or unpushed
+changes to it, works through each finding (fix it, or answer with a reason; the bot
+re-checks a disagreement), and rechecks until nothing is left unanswered. Nothing is
+posted to GitHub.
+
+It uses the same sign-in as the rest of the plugin: no key to paste. You can review a
+repository when its GitHub installation of the Prova PR bot is linked to one of your
+ProvaLab orgs (an org owner links it on reviews.provalab.io). For CI and scripts, use
+an API key from that dashboard instead.
 
 ## How it behaves
 
