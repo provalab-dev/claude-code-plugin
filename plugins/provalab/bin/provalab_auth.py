@@ -43,7 +43,7 @@ from typing import Any, Dict, Optional
 
 
 # ── Defaults ────────────────────────────────────────────────────────────
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 DEFAULT_ISSUER = os.environ.get("PROVALAB_AUTH_ISSUER", "https://auth-api.provalab.io")
 DEFAULT_CLIENT_ID = os.environ.get("PROVALAB_AUTH_CLIENT_ID", "provalab-cli")
 DEFAULT_SCOPE = os.environ.get(
@@ -225,6 +225,8 @@ def cmd_login(args: argparse.Namespace) -> int:
 
 def _persist_tokens(tokens: Dict[str, Any], *, issuer: str, client_id: str, scope: str) -> None:
     now = int(time.time())
+    # other servers' tokens from this login (mcp-header --resource) stay cached
+    resources = _load_config().get("resources") or {}
     data = {
         "issuer": issuer,
         "client_id": client_id,
@@ -235,6 +237,8 @@ def _persist_tokens(tokens: Dict[str, Any], *, issuer: str, client_id: str, scop
         "token_type": tokens.get("token_type", "Bearer"),
         "obtained_at": now,
     }
+    if resources:
+        data["resources"] = resources
     _save_config(data)
 
 
@@ -297,6 +301,41 @@ def _refresh_if_needed(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return _load_config()
 
 
+def _resource_token(cfg: Dict[str, Any], resource: str) -> str:
+    """An access token for another ProvaLab MCP server (e.g. the PR review server)
+    from the same login: identity's refresh grant with RFC 8707 `resource` gives a
+    token for that server alone and returns the login's refresh token. Cached per
+    server until it nears expiry."""
+    now = int(time.time())
+    hit = (cfg.get("resources") or {}).get(resource) or {}
+    if hit.get("access_token") and hit.get("expires_at", 0) - REFRESH_LEEWAY_SECONDS > now:
+        return hit["access_token"]
+    refresh_token = cfg.get("refresh_token")
+    if not refresh_token:
+        raise RuntimeError("no refresh_token available; run `provalab-auth login`")
+    issuer = cfg.get("issuer", DEFAULT_ISSUER)
+    client_id = cfg.get("client_id", DEFAULT_CLIENT_ID)
+    token_url = _openid_config(issuer)["token_endpoint"]
+    try:
+        tokens = _http_post_form(token_url, {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "resource": resource,
+        })
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"sign-in for {resource} failed ({e.code}); run `provalab-auth login`") from e
+    cfg = dict(cfg)
+    if tokens.get("refresh_token"):
+        cfg["refresh_token"] = tokens["refresh_token"]
+    cfg["resources"] = {**(cfg.get("resources") or {}), resource: {
+        "access_token": tokens["access_token"],
+        "expires_at": now + int(tokens.get("expires_in", 3600)),
+    }}
+    _save_config(cfg)
+    return tokens["access_token"]
+
+
 def cmd_token(args: argparse.Namespace) -> int:
     """Print a fresh access token to stdout. Refreshes silently if needed."""
     cfg = _load_config()
@@ -329,12 +368,16 @@ def cmd_mcp_header(args: argparse.Namespace) -> int:
     if not cfg.get("access_token"):
         sys.stderr.write("provalab-auth: not signed in — run `provalab-auth login`\n")
         return 3
+    resource = (getattr(args, "resource", "") or "").strip()
     try:
-        cfg = _refresh_if_needed(cfg)
+        if resource:
+            token = _resource_token(cfg, resource)
+        else:
+            token = _refresh_if_needed(cfg)["access_token"]
     except Exception as e:
         sys.stderr.write(f"provalab-auth: {e}\n")
         return 3
-    headers = {"Authorization": f"Bearer {cfg['access_token']}"}
+    headers = {"Authorization": f"Bearer {token}"}
     # Optional org/project selection for users in more than one org. The MCP
     # server otherwise uses the user's first active org, and the project when
     # that org has only one. Only non-empty values are sent: an empty header
@@ -439,6 +482,9 @@ def _build_parser() -> argparse.ArgumentParser:
     mh.set_defaults(func=cmd_mcp_header)
     mh.add_argument("--raw", action="store_true",
                     help="Print a raw `Authorization: Bearer ...` header line instead of JSON")
+    mh.add_argument("--resource", default="",
+                    help="Another ProvaLab MCP server to get a token for with the same "
+                         "sign-in, e.g. https://reviews.provalab.io/mcp")
 
     status = sub.add_parser("status", help="Show current sign-in state.")
     status.set_defaults(func=cmd_status)
